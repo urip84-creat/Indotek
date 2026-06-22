@@ -1,2 +1,2 @@
 # BIUTR-Indotek
-Tampilan Tase BIUTR
+Tampilan Trase BIUTR
