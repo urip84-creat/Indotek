@@ -187,21 +187,21 @@
       <div class="layer-group-title">Area &amp; Kawasan</div>
       <label class="layer-item">
         <input type="checkbox" checked onchange="toggleLayer(lyrKI, this.checked)">
-        <div class="sym"><div class="sym-poly" style="background:rgba(255,193,7,0.2);border-color:#f57f17;"></div></div>
+        <div class="sym"><div class="sym-poly" id="sym-ki" style="background:rgba(255,193,7,0.2);border-color:#f57f17;border-width:2px;border-style:solid;"></div></div>
         <span class="layer-label">Kawasan Industri Mimika</span>
-        <input type="color" class="color-pick" value="#f57f17" onchange="changeColor(lyrKI, this.value, 'poly')">
+        <input type="color" class="color-pick" value="#f57f17" onchange="changeColor(lyrKI, this.value, 'poly', 'sym-ki')">
       </label>
       <label class="layer-item">
         <input type="checkbox" checked onchange="toggleLayer(lyrProcessing, this.checked)">
-        <div class="sym"><div class="sym-poly" style="background:rgba(229,57,53,0.2);border-color:#c62828;"></div></div>
+        <div class="sym"><div class="sym-poly" id="sym-proc" style="background:rgba(229,57,53,0.2);border-color:#c62828;border-width:2px;border-style:solid;"></div></div>
         <span class="layer-label">Processing Area</span>
-        <input type="color" class="color-pick" value="#c62828" onchange="changeColor(lyrProcessing, this.value, 'poly')">
+        <input type="color" class="color-pick" value="#c62828" onchange="changeColor(lyrProcessing, this.value, 'poly', 'sym-proc')">
       </label>
       <label class="layer-item">
         <input type="checkbox" checked onchange="toggleLayer(lyrPembagian, this.checked)">
-        <div class="sym"><div class="sym-poly" style="background:rgba(46,125,50,0.2);border-color:#1b5e20;"></div></div>
+        <div class="sym"><div class="sym-poly" id="sym-mod" style="background:rgba(46,125,50,0.2);border-color:#1b5e20;border-width:2px;border-style:solid;"></div></div>
         <span class="layer-label">Pembagian Mod Ada</span>
-        <input type="color" class="color-pick" value="#1b5e20" onchange="changeColor(lyrPembagian, this.value, 'poly')">
+        <input type="color" class="color-pick" value="#1b5e20" onchange="changeColor(lyrPembagian, this.value, 'poly', 'sym-mod')">
       </label>
     </div>
 
@@ -209,21 +209,21 @@
       <div class="layer-group-title">Infrastruktur</div>
       <label class="layer-item">
         <input type="checkbox" checked onchange="toggleLayer(lyrPipa, this.checked)">
-        <div class="sym"><div class="sym-line" style="background:#1565c0;"></div></div>
+        <div class="sym"><div class="sym-line" id="sym-pipa" style="background:#1565c0;"></div></div>
         <span class="layer-label">Pipa Freeport</span>
-        <input type="color" class="color-pick" value="#1565c0" onchange="changeColor(lyrPipa, this.value, 'line')">
+        <input type="color" class="color-pick" value="#1565c0" onchange="changeColor(lyrPipa, this.value, 'line', 'sym-pipa')">
       </label>
       <label class="layer-item">
         <input type="checkbox" checked onchange="toggleLayer(lyrTanggul, this.checked)">
-        <div class="sym"><div class="sym-line" style="background:#4e342e;"></div></div>
+        <div class="sym"><div class="sym-line" id="sym-tanggul" style="background:#795548;"></div></div>
         <span class="layer-label">Tanggul</span>
-        <input type="color" class="color-pick" value="#4e342e" onchange="changeColor(lyrTanggul, this.value, 'line')">
+        <input type="color" class="color-pick" value="#795548" onchange="changeColor(lyrTanggul, this.value, 'line', 'sym-tanggul')">
       </label>
       <label class="layer-item">
         <input type="checkbox" checked onchange="toggleLayer(lyrJalur, this.checked)">
-        <div class="sym"><div class="sym-line-dash" style="border-color:#e65100;"></div></div>
+        <div class="sym"><div class="sym-line-dash" id="sym-jalur" style="border-color:#e65100;"></div></div>
         <span class="layer-label">Rencana Jalur</span>
-        <input type="color" class="color-pick" value="#e65100" onchange="changeColor(lyrJalur, this.value, 'line')">
+        <input type="color" class="color-pick" value="#e65100" onchange="changeColor(lyrJalur, this.value, 'dash', 'sym-jalur')">
       </label>
     </div>
 
@@ -383,7 +383,7 @@ const lyrPipa = L.geoJSON(gj_pipa, {
 
 // Tanggul — garis coklat tebal
 const lyrTanggul = L.geoJSON(gj_tanggul, {
-  style:{ color:'#4e342e', weight:4, opacity:0.9 }
+  style:{ color:'#795548', weight:4, opacity:0.9 }
 }).on('click', makeClickHandler('Tanggul')).addTo(map);
 
 // Rencana Jalur — garis putus-putus oranye
@@ -421,11 +421,27 @@ lyrLabelJalur.addTo(map);
 
 function toggleLayer(lg, show) { show ? lg.addTo(map) : map.removeLayer(lg); }
 
-function changeColor(layer, color, type) {
-  layer.setStyle(type === 'poly'
-    ? { color, fillColor:color, fillOpacity:0.2, weight:2 }
-    : { color, weight: type === 'line' ? 3 : 2 }
-  );
+function changeColor(layer, color, type, symId) {
+  // Update layer di peta
+  if (type === 'poly') {
+    layer.setStyle({ color, fillColor:color, fillOpacity:0.2, weight:2 });
+  } else {
+    layer.setStyle({ color, weight: 3 });
+  }
+  // Update simbol di legenda
+  if (symId) {
+    const sym = document.getElementById(symId);
+    if (sym) {
+      if (type === 'poly') {
+        sym.style.borderColor = color;
+        sym.style.background = color + '33'; // 20% opacity
+      } else if (type === 'line') {
+        sym.style.background = color;
+      } else if (type === 'dash') {
+        sym.style.borderColor = color;
+      }
+    }
+  }
 }
 
 function bringFront() {
