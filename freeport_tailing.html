@@ -5,12 +5,26 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Tailing PT. Freeport Indonesia - Mimika</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<link rel="stylesheet" href="https://unpkg.com/leaflet-measure/dist/leaflet-measure.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet-measure/dist/leaflet-measure.js"></script>
 <script src="https://unpkg.com/shpjs@latest/dist/shp.js"></script>
 <script src="https://unpkg.com/leaflet-omnivore@0.3.4/leaflet-omnivore.min.js"></script>
 <style>
+  /* Cursor presisi (crosshair) saat mode ukur jarak/luas aktif */
+  #map.measuring-active,
+  #map.measuring-active .leaflet-container,
+  #map.measuring-active .leaflet-interactive {
+    cursor: crosshair !important;
+  }
+
+  /* Tombol Ukur Jarak/Luas — mengikuti gaya kontrol Leaflet bawaan (leaflet-bar) */
+  .measure-ctrl-btn {
+    width: 34px; height: 34px;
+    display: flex; align-items: center; justify-content: center;
+    background: white; font-size: 16px; cursor: pointer;
+    text-decoration: none; color: #333;
+  }
+  .measure-ctrl-btn:hover { background: #f4f4f4; }
+  .measure-ctrl-btn.active-mode { background: #ffe0b2; }
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family:'Segoe UI',Arial,sans-serif; height:100vh; display:flex; flex-direction:column; }
 
@@ -154,6 +168,16 @@
 </div>
 
 <div id="map"></div>
+
+<!-- Panel Hasil Ukur (tombol ukur sendiri didaftarkan sebagai Leaflet Control agar tidak tumpang tindih) -->
+<div id="measure-panel" style="display:none; position:absolute; top:12px; right:60px; z-index:1100; background:white; border-radius:8px; box-shadow:0 2px 10px rgba(0,0,0,.35); padding:12px; width:230px; font-size:12px; color:#333;">
+  <div id="measure-title" style="font-weight:700; margin-bottom:6px; font-size:13px;">📏 Ukur Jarak</div>
+  <div id="measure-result" style="margin-bottom:10px; line-height:1.5;">Klik di peta untuk mulai menandai titik.</div>
+  <div style="display:flex; gap:6px;">
+    <button onclick="cancelMeasure()" style="flex:1;padding:6px;border:1px solid #999;border-radius:4px;background:#f5f5f5;cursor:pointer;font-size:12px;">Batal</button>
+    <button onclick="finishMeasure()" style="flex:1;padding:6px;border:none;border-radius:4px;background:#1b5e20;color:white;cursor:pointer;font-size:12px;">Selesai</button>
+  </div>
+</div>
 
 <div id="panel">
   <div id="panel-header" onclick="togglePanel()">
@@ -336,13 +360,149 @@ map.on('mousemove',e=>{
 map.on('zoomend',()=>{ document.getElementById('coord-zoom').textContent=map.getZoom(); });
 document.getElementById('coord-zoom').textContent=map.getZoom();
 
-// ── PENGUKUR JARAK ────────────────────────────────────────────────────
-L.control.measure({
-  position:'topright',
-  primaryLengthUnit:'meters',secondaryLengthUnit:'kilometers',
-  primaryAreaUnit:'sqmeters',secondaryAreaUnit:'hectares',
-  activeColor:'#e53935',completedColor:'#1b5e20'
-}).addTo(map);
+// ── PENGUKUR JARAK & LUAS (custom, berbasis klik-peta native Leaflet) ──
+// Dibuat sendiri (bukan plugin pihak ketiga) karena plugin leaflet-measure
+// terbukti punya bug: titik yang tersimpan sering meleset dari posisi klik.
+// Klik peta native (map.on('click')) di Leaflet selalu akurat — dibuktikan
+// oleh popup info pada layer lain yang selalu tepat di posisi yang diklik.
+(function() {
+  let mode = null;        // 'distance' | 'area' | null
+  let points = [];
+  let tempShape = null;
+  let vertexMarkers = [];
+
+  function toRad(d){ return d * Math.PI / 180; }
+
+  // Formula luas geodesik standar (dipakai juga di internal Leaflet.Draw)
+  function geodesicArea(latlngs) {
+    let area = 0, n = latlngs.length;
+    if (n > 2) {
+      for (let i = 0; i < n; i++) {
+        const p1 = latlngs[i], p2 = latlngs[(i + 1) % n];
+        area += (toRad(p2.lng) - toRad(p1.lng)) * (2 + Math.sin(toRad(p1.lat)) + Math.sin(toRad(p2.lat)));
+      }
+      area = area * 6378137.0 * 6378137.0 / 2.0;
+    }
+    return Math.abs(area);
+  }
+
+  function totalDistance(latlngs) {
+    let d = 0;
+    for (let i = 0; i < latlngs.length - 1; i++) d += latlngs[i].distanceTo(latlngs[i + 1]);
+    return d;
+  }
+
+  function fmtDist(m) {
+    return m >= 1000 ? (m/1000).toFixed(2) + ' km (' + Math.round(m).toLocaleString('id-ID') + ' m)' : Math.round(m) + ' m';
+  }
+  function fmtArea(m2) {
+    return m2 >= 10000 ? (m2/10000).toFixed(2) + ' ha (' + Math.round(m2).toLocaleString('id-ID') + ' m²)' : Math.round(m2) + ' m²';
+  }
+
+  function clearShapes() {
+    if (tempShape) { map.removeLayer(tempShape); tempShape = null; }
+    vertexMarkers.forEach(m => map.removeLayer(m));
+    vertexMarkers = [];
+  }
+
+  function updatePanel() {
+    const box = document.getElementById('measure-result');
+    if (!mode || points.length === 0) { box.innerHTML = '<span style="color:#888;">Klik di peta untuk mulai menandai titik.</span>'; return; }
+    if (mode === 'distance') {
+      box.innerHTML = points.length < 2
+        ? '<span style="color:#888;">Klik titik berikutnya…</span>'
+        : 'Jarak total: <b>' + fmtDist(totalDistance(points)) + '</b>';
+    } else {
+      box.innerHTML = points.length < 3
+        ? '<span style="color:#888;">Klik minimal 3 titik untuk membentuk area…</span>'
+        : 'Luas: <b>' + fmtArea(geodesicArea(points)) + '</b><br>Keliling: <b>' + fmtDist(totalDistance(points.concat([points[0]]))) + '</b>';
+    }
+  }
+
+  function redraw() {
+    if (tempShape) { map.removeLayer(tempShape); tempShape = null; }
+    if (mode === 'distance' && points.length > 1) {
+      tempShape = L.polyline(points, { color:'#e53935', weight:3 }).addTo(map);
+    } else if (mode === 'area' && points.length > 2) {
+      tempShape = L.polygon(points, { color:'#e53935', weight:3, fillColor:'#e53935', fillOpacity:0.15 }).addTo(map);
+    } else if (mode === 'area' && points.length === 2) {
+      tempShape = L.polyline(points, { color:'#e53935', weight:3, dashArray:'4,4' }).addTo(map);
+    }
+    updatePanel();
+  }
+
+  function onMapClick(e) {
+    if (!mode) return;
+    points.push(e.latlng);
+    const vm = L.circleMarker(e.latlng, { radius:5, color:'#e53935', weight:2, fillColor:'#fff', fillOpacity:1 }).addTo(map);
+    vertexMarkers.push(vm);
+    redraw();
+  }
+
+  function startMode(m) {
+    clearShapes();
+    points = [];
+    mode = m;
+    map.doubleClickZoom.disable();
+    map.getContainer().classList.add('measuring-active');
+    document.getElementById('measure-panel').style.display = 'block';
+    document.getElementById('measure-title').textContent = m === 'distance' ? '📏 Ukur Jarak' : '📐 Ukur Luas';
+    updatePanel();
+    document.getElementById('btn-measure-distance').classList.toggle('active-mode', m === 'distance');
+    document.getElementById('btn-measure-area').classList.toggle('active-mode', m === 'area');
+  }
+
+  function stopMeasuring() {
+    mode = null;
+    map.doubleClickZoom.enable();
+    map.getContainer().classList.remove('measuring-active');
+    document.getElementById('measure-panel').style.display = 'none';
+    document.getElementById('btn-measure-distance').classList.remove('active-mode');
+    document.getElementById('btn-measure-area').classList.remove('active-mode');
+    clearShapes();
+    points = [];
+  }
+
+  map.on('click', onMapClick);
+
+  window.startMeasureDistance = () => startMode('distance');
+  window.startMeasureArea = () => startMode('area');
+  window.cancelMeasure = stopMeasuring;
+  // "Selesai" mempertahankan bentuk terakhir yang tergambar, hanya berhenti menambah titik baru
+  window.finishMeasure = () => {
+    mode = null;
+    map.doubleClickZoom.enable();
+    map.getContainer().classList.remove('measuring-active');
+    document.getElementById('measure-panel').style.display = 'none';
+    document.getElementById('btn-measure-distance').classList.remove('active-mode');
+    document.getElementById('btn-measure-area').classList.remove('active-mode');
+  };
+
+  // Tombol Ukur Jarak & Luas didaftarkan sebagai Leaflet Control asli
+  // supaya otomatis tersusun rapi di bawah tombol zoom (tidak tumpang tindih).
+  const MeasureControl = L.Control.extend({
+    options: { position: 'topright' },
+    onAdd: function() {
+      const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+
+      const btnDist = L.DomUtil.create('a', 'measure-ctrl-btn', container);
+      btnDist.id = 'btn-measure-distance';
+      btnDist.innerHTML = '📏';
+      btnDist.title = 'Ukur Jarak';
+      L.DomEvent.on(btnDist, 'click', (e) => { L.DomEvent.stopPropagation(e); window.startMeasureDistance(); });
+
+      const btnArea = L.DomUtil.create('a', 'measure-ctrl-btn', container);
+      btnArea.id = 'btn-measure-area';
+      btnArea.innerHTML = '📐';
+      btnArea.title = 'Ukur Luas';
+      L.DomEvent.on(btnArea, 'click', (e) => { L.DomEvent.stopPropagation(e); window.startMeasureArea(); });
+
+      L.DomEvent.disableClickPropagation(container);
+      return container;
+    }
+  });
+  map.addControl(new MeasureControl());
+})();
 
 // ── INFO BOX ──────────────────────────────────────────────────────────
 function showInfo(title, rows) {
@@ -506,6 +666,19 @@ function bringFront() {
 
 // Fit bounds ke semua layer
 try { map.fitBounds(lyrAreaKerja.getBounds(), {padding:[60,60]}); } catch(e){}
+
+// ── FIX: SINKRONKAN UKURAN PETA (mencegah titik ukur/klik meleset) ────
+// Leaflet menyimpan ukuran kontainer saat inisialisasi; jika layout (font,
+// panel, dsb) telat selesai render, ukuran itu jadi tidak akurat sehingga
+// konversi piksel↔koordinat bergeser saat mengukur jarak/luas.
+// PENTING: jangan panggil invalidateSize() saat sedang mengukur, karena akan
+// mengubah sistem piksel↔koordinat di tengah proses dan bikin titik meleset jauh.
+function safeInvalidateSize() {
+  map.invalidateSize();
+}
+map.invalidateSize();
+window.addEventListener('load', safeInvalidateSize);
+window.addEventListener('resize', safeInvalidateSize);
 
 // ── UPLOAD MULTI-FORMAT ───────────────────────────────────────────────
 const uploadedLayers = {};
